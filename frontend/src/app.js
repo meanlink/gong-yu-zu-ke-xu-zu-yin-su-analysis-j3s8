@@ -1,5 +1,6 @@
 import {leaseLabels, renderLease} from './lease-desk/workspace.js';
 import {residentLabels,renderResident} from './resident-operations.js';
+import {renderReviewWorkspace} from './analysis-batches.js';
 import {api, saveSession, clearSession, session} from './api.js';
 import {el, table, toast, badge} from './components.js';
 
@@ -45,7 +46,9 @@ function shell(){
   app.append(nav,main); return main;
 }
 async function dashboard(main){
-  const [d, a, tasks] = await Promise.all([api('/dashboard'), api('/analysis/latest'), api('/followups')]);
+  const [d, tasks] = await Promise.all([api('/dashboard'), api('/followups')]);
+  let a = null;
+  try { a = await api('/analysis/latest'); } catch { a = null; }
   main.append(el('div',{class:'page-head'},[
     el('div',{},[
       el('div',{class:'eyebrow',text:'RETENTION OPERATIONS / 2026 Q4'}),
@@ -68,23 +71,27 @@ async function dashboard(main){
     ]),
     el('span',{class:'task-date',text:t.due_date})
   ]));
-  main.append(el('section',{class:'split-grid'},[
-    el('div',{class:'panel large'},[
-      el('div',{class:'panel-title'},[el('h2',{text:'模型摘要'}),badge('Python 计算','blue')]),
-      el('div',{class:'finding'},[
-        el('div',{class:'finding-number',text:String(a.partial_correlation)}),
-        el('div',{},[
-          el('strong',{text:'偏相关系数'}),
-          el('p',{class:'muted',text:a.partial_corr_label}),
-          el('p',{class:'interpret',text:a.explanation})
-        ])
-      ]),
-      el('div',{class:'model-strip'},[
-        el('span',{text:`样本 ${a.sample_size} 份`}),
-        el('span',{text:`R² ${a.stepwise.r2}`}),
-        el('span',{text:`入模 ${a.stepwise.selected_features.join(' · ')}`})
+  const modelPanel = a ? el('div',{class:'panel large'},[
+    el('div',{class:'panel-title'},[el('h2',{text:`模型摘要 · 批次 #${a.id}`}),badge('批次留档','blue')]),
+    el('div',{class:'finding'},[
+      el('div',{class:'finding-number',text:String(a.partial_correlation)}),
+      el('div',{},[
+        el('strong',{text:'偏相关系数'}),
+        el('p',{class:'muted',text:a.partial_corr_label}),
+        el('p',{class:'interpret',text:a.explanation})
       ])
     ]),
+    el('div',{class:'model-strip'},[
+      el('span',{text:`快照样本 ${a.sample_size} 份`}),
+      el('span',{text:`R² ${a.stepwise.r2}`}),
+      el('span',{text:`入模 ${a.stepwise.selected_features.join(' · ')}`})
+    ])
+  ]) : el('div',{class:'panel large'},[
+    el('div',{class:'panel-title'},[el('h2',{text:'模型摘要'}),badge('暂无批次','neutral')]),
+    el('p',{class:'muted',text:'尚无成功分析批次，请在「问卷与跟进」页运行分析生成新批次。'})
+  ]);
+  main.append(el('section',{class:'split-grid'},[
+    modelPanel,
     el('div',{class:'panel'},[
       el('div',{class:'panel-title'},[
         el('h2',{text:'今日跟进清单'}),
@@ -149,20 +156,16 @@ async function renewals(main){
       ...taskCards
     ])
   ]));
-  const analysisButton = el('button',{class:'button secondary',text:'运行偏相关与逐步回归',onClick:async()=>{
-    try{const a=await api('/analysis/run',{method:'POST'});toast(`分析完成，偏相关 ${a.partial_correlation}`,'success');render();}
-    catch(err){toast(err.message,'error');}
+  const analysisButton = el('button',{class:'button secondary',text:'运行分析并生成新批次',onClick:async()=>{
+    try{const a=await api('/analysis/run',{method:'POST'});toast(`批次 #${a.id} 已留档，偏相关 ${a.partial_correlation}`,'success');render();}
+    catch(err){toast(`分析未生成批次：${err.message}`,'error');}
   }});
-  const reviewButton = state.user.role==='customer_manager' ? el('button',{class:'button orange',text:'客户经营复核并生成清单',onClick:async()=>{
-    try{const r=await api('/reviews/approve',{method:'POST',body:JSON.stringify({note:'已复核模型解释与租客原话，安排分级沟通'})});toast(`已生成 ${r.created_followups} 条跟进`,'success');render();}
-    catch(err){toast(err.message,'error');}
-  }}) : null;
   main.append(el('section',{class:'action-bar'},[
     el('div',{},[
-      el('strong',{text:'复核动作'}),
-      el('p',{class:'muted',text:'客户经理确认后，只有活跃租客会进入跟进清单。已退租和重复问卷在后端被阻断。'})
+      el('strong',{text:'分析批次'}),
+      el('p',{class:'muted',text:'每次成功分析都会留档一批样本快照、计算结果和跟进预览；分析失败不影响原批次，经理仍可复核原批。'})
     ]),
-    el('div',{class:'action-row'},[analysisButton,reviewButton])
+    el('div',{class:'action-row'},[analysisButton])
   ]));
   document.querySelector('#survey-form').addEventListener('submit',async e=>{
     e.preventDefault();
@@ -177,6 +180,9 @@ async function renewals(main){
       toast('问卷已采集','success'); render();
     }catch(err){toast(err.message,'error');}
   });
+
+  // 复核工作台基于批次快照，补录问卷或报修结修不会改变已打开批次的数据
+  await renderReviewWorkspace(main, state.user, render);
 }
 function scoreInput(name,label){return el('label',{class:'compact'},[label,el('input',{name,type:'number',min:1,max:5,step:.1,value:'4'})]);}
 function select(name,label,options){return el('label',{class:'compact'},[label,el('select',{name},options.map(o=>el('option',{value:o[0],text:o[1]})))]);}

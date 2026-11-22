@@ -26,3 +26,4 @@ class SurveyIn(BaseModel):
 
 class ReviewIn(BaseModel):
     note: str = Field(min_length=3, max_length=300)
+    batch_id: int | None = None

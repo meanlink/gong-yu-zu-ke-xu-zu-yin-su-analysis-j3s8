@@ -7,7 +7,8 @@ from .db import init_db, query, one, execute
 from .auth import current_user, require_roles, issue_token, same_password
 from .schemas import LoginIn, ServiceEventIn, SurveyIn, ReviewIn
 from .resident_routes import router as resident_router
-from .services import audit, survey_rows, build_followups, get_analysis
+from . import batches
+from .services import audit, survey_rows
 
 app = FastAPI(title="公寓租客续租因素分析")
 app.include_router(resident_router)
@@ -24,6 +25,13 @@ def startup():
             seed()
         except Exception as exc:
             print("seed skipped", exc, flush=True)
+    # 首次启动留档一批分析，保证分析页与总览有可查看的批次；失败不影响服务
+    try:
+        if not one("SELECT id FROM analysis_batch ORDER BY id DESC LIMIT 1"):
+            system = {"id": None, "email": "system@harborstay.local"}
+            batches.create_batch(system)
+    except Exception as exc:
+        print("initial batch skipped", exc, flush=True)
 
 @app.middleware("http")
 async def audit_request(request: Request, call_next):
@@ -108,28 +116,32 @@ def add_survey(payload: SurveyIn, user=Depends(require_roles("analyst", "custome
 
 @app.get("/analysis/latest")
 def analysis_latest(user=Depends(current_user)):
-    try:
-        result = get_analysis()
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    return result
+    # 始终读取最近一次成功分析批次的留档结果，不随实时数据漂移
+    return batches.latest_batch()
+
+@app.get("/analysis/batches")
+def analysis_batches(user=Depends(current_user)):
+    return batches.list_batches()
+
+@app.get("/analysis/batches/{batch_id}")
+def analysis_batch_detail(batch_id: int, user=Depends(current_user)):
+    return batches.get_batch(batch_id)
 
 @app.post("/analysis/run")
 def analysis_run(user=Depends(require_roles("analyst", "customer_manager"))):
-    try:
-        result = get_analysis()
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    execute("UPDATE renewal_surveys SET analyzed_at=NOW() WHERE analyzed_at IS NULL")
-    audit(user,"run_analysis","renewal_survey",None,f"n={result['sample_size']}; partial={result['partial_correlation']}")
-    return result
+    # 成功才留档；分析失败抛 422，不产生批次，原批次仍可复核
+    return batches.create_batch(user)
+
+@app.get("/reviews/latest-preview")
+def review_preview(user=Depends(current_user)):
+    # 分析师只读查看预览；实际派单仍由 /reviews/approve 的经理鉴权把关
+    return batches.latest_batch()
 
 @app.post("/reviews/approve")
 def approve_review(payload: ReviewIn, user=Depends(require_roles("customer_manager"))):
-    execute("UPDATE renewal_surveys SET status='reviewed', reviewed_at=NOW() WHERE status='submitted'")
-    created = build_followups(user)
-    audit(user,"approve_review","renewal_review",None,payload.note)
-    return {"approved": True, "created_followups": len(created), "note": payload.note}
+    # 无 batch_id 时复核最新批次；打开旧批次复核可显式带 batch_id
+    batch_id = payload.batch_id or batches.latest_batch()["id"]
+    return batches.approve_batch(batch_id, payload.note, user)
 
 @app.get("/followups")
 def followups(user=Depends(current_user)):

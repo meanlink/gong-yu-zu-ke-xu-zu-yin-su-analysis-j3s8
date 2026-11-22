@@ -15,7 +15,7 @@ export function table(headers, rows, empty='暂无记录') {
   t.append(el('thead',{},[el('tr',{},headers.map(h=>el('th',{text:h})))]));
   const body = el('tbody');
   if (!rows.length) body.append(el('tr',{},[el('td',{colSpan:headers.length,class:'empty',text:empty})]));
-  rows.forEach(row=>body.append(el('tr',{},row.map(cell=>el('td',{text:String(cell ?? '—')})))));
+  rows.forEach(row=>body.append(el('tr',{},row.map(cell=>cell instanceof Node ? el('td',{},[cell]) : el('td',{text:String(cell ?? '—')})))));
   t.append(body); wrap.append(t); return wrap;
 }
 export function toast(message, kind='info') { const box = el('div',{class:`toast ${kind}`,text:message}); document.body.append(box); setTimeout(()=>box.remove(),3200); }
